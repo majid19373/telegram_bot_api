@@ -3,91 +3,133 @@
 namespace TelegramBot;
 
 use Exception;
-use TelegramBot\Http\HttpClient;
+use Psr\Http\Client\ClientExceptionInterface;
+use Psr\Http\Client\ClientInterface;
+use Psr\Http\Message\RequestFactoryInterface;
+use Psr\Http\Message\StreamFactoryInterface;
+use TelegramBot\Models\Message;
+use TelegramBot\Models\Photo;
+use TelegramBot\Models\SentMessage;
+use TelegramBot\Models\User;
 
-final class Api
+final class Api implements TelegramApiInterface
 {
-    private string $telegram_bot_url;
-    private HttpClient $httpClient;
+    private string                  $telegram_bot_url;
+    private ClientInterface         $httpClient;
+    private RequestFactoryInterface $requestFactory;
+    private StreamFactoryInterface  $streamFactory;
 
-    public function __construct(string $token)
+    public function __construct(
+        string                  $token,
+        ClientInterface         $httpClient,
+        RequestFactoryInterface $requestFactory,
+        StreamFactoryInterface  $streamFactory)
     {
         $this->telegram_bot_url = "https://api.telegram.org/bot$token/";
-        $this->httpClient = HttpClient::baseUrl($this->telegram_bot_url)->acceptJson();
+        $this->httpClient = $httpClient;
+        $this->requestFactory = $requestFactory;
+        $this->streamFactory = $streamFactory;
     }
 
     /**
      * @throws Exception
+     * @throws ClientExceptionInterface
      */
-    public function getMe(): array
+    public function getMe(): User
     {
-        return $this->httpClient->asJson()->post('getMe')->json();
+        $result = $this->sendRequest('getMe');
+
+        return new User(
+            id:        $result['id'],
+            isBot:     $result['is_bot'],
+            firstName: $result['first_name'],
+            lastName:  $result['last_name'] ?? null,
+            username:  $result['username'] ?? null,
+        );
     }
 
     /**
      * @throws Exception
+     * @throws ClientExceptionInterface
      */
-    public function getUpdates(): array
+    public function sendMessage(Message $message): SentMessage
     {
-        return $this->httpClient->asJson()->post('getUpdates')->json();
+        $result = $this->sendRequest('sendMessage', [
+            'chat_id' => $message->chatId,
+            'text' => $message->text
+        ]);
+
+        return $this->sentMessage($result);
     }
 
     /**
      * @throws Exception
+     * @throws ClientExceptionInterface
      */
-    public function sendMessage(int|string $chatId, string $text): array
+    public function sendPhoto(Photo $photo): SentMessage
     {
-        return $this->httpClient->asJson()->post('sendMessage', [
-            'chat_id' => $chatId,
-            'text' => $text,
-        ])->json();
+        $result = $this->sendRequest('sendPhoto', [
+            'chat_id' => $photo->chatId,
+            'photo' => $photo->photo,
+            'caption' => $photo->caption,
+        ]);
+
+        return $this->sentMessage($result);
     }
 
     /**
+     * @throws ClientExceptionInterface
      * @throws Exception
      */
-    public function sendPhoto(int|string $chatId, string $photo, ?string $caption = null): array
+    private function sendRequest(string $method, array $data = []): array
     {
-        return $this->httpClient->asJson()->post('sendPhoto', [
-            'chat_id' => $chatId,
-            'photo' => $photo,
-            'caption' => $caption,
-        ])->json();
+        $url = $this->telegram_bot_url . $method;
+
+        $body = json_encode($data);
+        if ($body === false) {
+            throw new Exception('Failed to encode JSON data');
+        }
+
+        $request = $this->requestFactory->createRequest('POST', $url)
+                                        ->withHeader('Content-Type', 'application/json')
+                                        ->withHeader('Accept', 'application/json')
+                                        ->withBody($this->streamFactory->createStream($body));
+
+        $response = $this->httpClient->sendRequest($request);
+
+        $responseBody = (string)$response->getBody();
+        $decoded = json_decode($responseBody, true);
+
+        if (json_last_error() !== JSON_ERROR_NONE) {
+            throw new Exception('Failed to decode JSON response: ' . json_last_error_msg());
+        }
+
+        if (!isset($decoded['ok']) || $decoded['ok'] !== true) {
+            $errorMessage = $decoded['description'] ?? 'Unknown error';
+            throw new Exception("Telegram API error: $errorMessage");
+        }
+
+        return $decoded['result'];
     }
 
-    /**
-     * @throws Exception
-     */
-    public function getUserProfilePhotos(int|string $userId): array
+    private function sentMessage(array $result): SentMessage
     {
-        return $this->httpClient->asJson()->post('getUserProfilePhotos', [
-            'user_id' => $userId,
-        ])->json();
-    }
-
-    /**
-     * @throws Exception
-     */
-    public function sendContact(int|string $chatId, string $phoneNumber, string $firstName, string $lastName): array
-    {
-        return $this->httpClient->asJson()->acceptJson()->post('sendContact', [
-            'chat_id' => $chatId,
-            'phone_number' => $phoneNumber,
-            'first_name' => $firstName,
-            'last_name' => $lastName,
-        ])->json();
-    }
-
-    /**
-     * @throws Exception
-     */
-    public function sendPoll(int|string $chatId, string $question, array $options): array
-    {
-        return $this->httpClient->asJson()->acceptJson()->post('sendPoll', [
-            'chat_id' => $chatId,
-            'question' => $question,
-            'options' => $options,
-        ])->json();
+        $user = null;
+        if ($result['from']) {
+            $from = $result['from'];
+            $user = new User(
+                id:        $from['id'],
+                isBot:     $from['is_bot'],
+                firstName: $from['first_name'],
+                lastName:  $from['last_name'] ?? null,
+                username:  $from['username'] ?? null,
+            );
+        }
+        return new SentMessage(
+            messageId:       $result['message_id'],
+            messageThreadId: $result['message_thread_id'] ?? null,
+            from:            $user,
+        );
     }
 
 
