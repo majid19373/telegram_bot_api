@@ -3,6 +3,8 @@
 namespace TelegramBot;
 
 use Exception;
+use Http\Discovery\Psr17FactoryDiscovery;
+use Http\Discovery\Psr18ClientDiscovery;
 use Psr\Http\Client\ClientExceptionInterface;
 use Psr\Http\Client\ClientInterface;
 use Psr\Http\Message\RequestFactoryInterface;
@@ -20,15 +22,16 @@ final class Api implements TelegramApiInterface
     private StreamFactoryInterface  $streamFactory;
 
     public function __construct(
-        string                  $token,
-        ClientInterface         $httpClient,
-        RequestFactoryInterface $requestFactory,
-        StreamFactoryInterface  $streamFactory)
+        string                   $token,
+        ?ClientInterface         $httpClient = null,
+        ?RequestFactoryInterface $requestFactory = null,
+        ?StreamFactoryInterface  $streamFactory = null
+    )
     {
         $this->telegram_bot_url = "https://api.telegram.org/bot$token/";
-        $this->httpClient = $httpClient;
-        $this->requestFactory = $requestFactory;
-        $this->streamFactory = $streamFactory;
+        $this->httpClient       = $httpClient ?? Psr18ClientDiscovery::find();
+        $this->requestFactory   = $requestFactory ?? Psr17FactoryDiscovery::findRequestFactory();
+        $this->streamFactory    = $streamFactory ?? Psr17FactoryDiscovery::findStreamFactory();
     }
 
     /**
@@ -56,7 +59,7 @@ final class Api implements TelegramApiInterface
     {
         $result = $this->sendRequest('sendMessage', [
             'chat_id' => $message->chatId,
-            'text' => $message->text
+            'text'    => $message->text
         ]);
 
         return $this->sentMessage($result);
@@ -70,7 +73,7 @@ final class Api implements TelegramApiInterface
     {
         $result = $this->sendRequest('sendPhoto', [
             'chat_id' => $photo->chatId,
-            'photo' => $photo->photo,
+            'photo'   => $photo->photo,
             'caption' => $photo->caption,
         ]);
 
@@ -90,15 +93,16 @@ final class Api implements TelegramApiInterface
             throw new Exception('Failed to encode JSON data');
         }
 
-        $request = $this->requestFactory->createRequest('POST', $url)
-                                        ->withHeader('Content-Type', 'application/json')
-                                        ->withHeader('Accept', 'application/json')
-                                        ->withBody($this->streamFactory->createStream($body));
+        $request = $this->requestFactory
+            ->createRequest('POST', $url)
+            ->withHeader('Content-Type', 'application/json')
+            ->withHeader('Accept', 'application/json')
+            ->withBody($this->streamFactory->createStream($body));
 
         $response = $this->httpClient->sendRequest($request);
 
         $responseBody = (string)$response->getBody();
-        $decoded = json_decode($responseBody, true);
+        $decoded      = json_decode($responseBody, true);
 
         if (json_last_error() !== JSON_ERROR_NONE) {
             throw new Exception('Failed to decode JSON response: ' . json_last_error_msg());
